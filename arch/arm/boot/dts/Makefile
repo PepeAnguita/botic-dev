@@ -7,6 +7,9 @@ endif
 srctree=$(KDIR)
 DTC_FLAGS += -i $(KDIR)/arch/arm/boot/dts
 
+$(obj)/%.dtbo: $(src)/%.dts FORCE
+	$(call if_changed_dep,dtc)
+
 dtb-$(CONFIG_SOC_AM33XX) += \
 	am335x-boneblack-botic.dtb \
 	am335x-boneblack-botic-sabre32.dtb
