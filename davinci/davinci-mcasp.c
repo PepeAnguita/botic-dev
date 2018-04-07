@@ -114,7 +114,8 @@ struct davinci_mcasp {
 	struct snd_pcm_hw_constraint_list chconstr[2];
 };
 
-static int mute_pins = 0;
+static int mute_pins = 12;
+static int mute_delay = 500;
 
 static inline void mcasp_set_bits(struct davinci_mcasp *mcasp, u32 offset,
 				  u32 val)
@@ -146,6 +147,27 @@ static inline void mcasp_set_reg(struct davinci_mcasp *mcasp, u32 offset,
 static inline u32 mcasp_get_reg(struct davinci_mcasp *mcasp, u32 offset)
 {
 	return (u32)__raw_readl(mcasp->base + offset);
+}
+
+static void mute_dsd_pin(struct davinci_mcasp *mcasp, int mute) {
+	void __iomem *z = mcasp->base + DAVINCI_MCASP_PDOUT_REG;
+	int i;
+	int x;
+	for (i = 0; i < 8; i++) {
+ 		if ((mute_pins & AXR(i)) != 0) {
+			if (mute) {
+				printk(KERN_NOTICE "really muting pin %d...\n", i);
+				x = __raw_readl(z) | AXR(i);
+				printk(KERN_NOTICE "setting bits %d on pin %d...\n", x, AXR(i));
+				mcasp_set_bits(mcasp, DAVINCI_MCASP_PDOUT_REG, AXR(i));
+			} else {
+				printk(KERN_NOTICE "really unmuting pin %d...\n", i);
+				x = (__raw_readl(z) & ~(AXR(i)));
+				printk(KERN_NOTICE "clearing bits %d on pin %d...\n", x, AXR(i));
+				mcasp_clr_bits(mcasp, DAVINCI_MCASP_PDOUT_REG, AXR(i));
+			}
+ 		}
+	}
 }
 
 static void mcasp_set_ctl_reg(struct davinci_mcasp *mcasp, u32 ctl_reg, u32 val)
@@ -240,6 +262,9 @@ static void mcasp_start_tx(struct davinci_mcasp *mcasp)
 	/* enable transmit IRQs */
 	mcasp_set_bits(mcasp, DAVINCI_MCASP_EVTCTLX_REG,
 		       mcasp->irq_request[SNDRV_PCM_STREAM_PLAYBACK]);
+
+	udelay(mute_delay);
+	mute_dsd_pin(mcasp, 0);
 }
 
 static void davinci_mcasp_start(struct davinci_mcasp *mcasp, int stream)
@@ -278,6 +303,8 @@ static void mcasp_stop_rx(struct davinci_mcasp *mcasp)
 static void mcasp_stop_tx(struct davinci_mcasp *mcasp)
 {
 	u32 val = 0;
+
+	mute_dsd_pin(mcasp, 1);
 
 	/* disable IRQ sources */
 	mcasp_clr_bits(mcasp, DAVINCI_MCASP_EVTCTLX_REG,
@@ -341,6 +368,8 @@ static irqreturn_t davinci_mcasp_tx_irq_handler(int irq, void *data)
 
 	/* Ack the handled event only */
 	mcasp_set_reg(mcasp, DAVINCI_MCASP_TXSTAT_REG, handled_mask);
+
+	printk(KERN_NOTICE "interrupt received %u...\n", stat);
 
 	return IRQ_RETVAL(handled_mask);
 }
@@ -840,6 +869,7 @@ static int mcasp_common_hw_param(struct davinci_mcasp *mcasp, int stream,
 			       mcasp->serial_dir[i]);
 		if (mcasp->serial_dir[i] == TX_MODE &&
 					tx_ser < max_active_serializers) {
+			// printk(KERN_NOTICE "setting serializer %d in TX_MODE\n", i);
 			mcasp_clr_bits(mcasp, DAVINCI_MCASP_PFUNC_REG, AXR(i));
 			mcasp_set_bits(mcasp, DAVINCI_MCASP_PDIR_REG, AXR(i));
 			mcasp_mod_bits(mcasp, DAVINCI_MCASP_XRSRCTL_REG(i),
@@ -847,16 +877,20 @@ static int mcasp_common_hw_param(struct davinci_mcasp *mcasp, int stream,
 			tx_ser++;
 		} else if (mcasp->serial_dir[i] == RX_MODE &&
 					rx_ser < max_active_serializers) {
+			// printk(KERN_NOTICE "setting serializer %d in RX_MODE\n", i);
 			mcasp_clr_bits(mcasp, DAVINCI_MCASP_PFUNC_REG, AXR(i));
 			mcasp_clr_bits(mcasp, DAVINCI_MCASP_PDIR_REG, AXR(i));
 			rx_ser++;
 		} else {
+			printk(KERN_NOTICE "setting serializer %d in standby...\n", i);
 			mcasp_set_bits(mcasp, DAVINCI_MCASP_PDIR_REG, AXR(i));
 			if ((mute_pins & AXR(i)) == 0 ||
 					((mute_pins & AXR(i)) != 0 && ((mute_pins & BIT(24)) != 0))) {
 				mcasp_clr_bits(mcasp, DAVINCI_MCASP_PDOUT_REG, AXR(i));
+				printk(KERN_NOTICE "bits cleared for serializer %d in standby...\n", i);
 			} else {
 				mcasp_set_bits(mcasp, DAVINCI_MCASP_PDOUT_REG, AXR(i));
+				printk(KERN_NOTICE "bits set for serializer %d in standby...\n", i);
 			}
 			mcasp_set_bits(mcasp, DAVINCI_MCASP_PFUNC_REG, AXR(i));
 			mcasp_mod_bits(mcasp, DAVINCI_MCASP_XRSRCTL_REG(i),
@@ -1842,6 +1876,7 @@ static struct davinci_mcasp_pdata *davinci_mcasp_set_pdata_from_of(
 			of_serial_dir[i] = be32_to_cpup(&of_serial_dir32[i]);
 
 		pdata->num_serializer = val;
+		printk(KERN_NOTICE "number of serializers: %d\n", pdata->num_serializer);
 		pdata->serial_dir = of_serial_dir;
 	}
 
@@ -2272,6 +2307,9 @@ module_platform_driver(davinci_mcasp_driver);
 
 module_param(mute_pins, int, 0644);
 MODULE_PARM_DESC(mute_pins, "use some of McASP pins as mute pin (bits 0-3), invert mute (bit 24)");
+
+module_param(mute_delay, int, 0644);
+MODULE_PARM_DESC(mute_delay, "configurable delay for the play click. stop click is already addressed");
 
 MODULE_AUTHOR("Steve Chen");
 MODULE_DESCRIPTION("TI DAVINCI McASP SoC Interface");
