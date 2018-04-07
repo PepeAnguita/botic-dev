@@ -64,4 +64,6 @@ relink:
 scripts:
 	$(MAKE) -C $(KDIR) scripts
 
+rebuild: prepare build install unload load
+
 endif
