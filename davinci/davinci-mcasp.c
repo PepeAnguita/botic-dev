@@ -28,6 +28,7 @@
 #include <linux/of_device.h>
 #include <linux/platform_data/davinci_asp.h>
 #include <linux/math64.h>
+#include <linux/timer.h>
 
 #include <sound/asoundef.h>
 #include <sound/core.h>
@@ -114,8 +115,11 @@ struct davinci_mcasp {
 	struct snd_pcm_hw_constraint_list chconstr[2];
 };
 
-static int mute_pins = 12;
-static int mute_delay = 500;
+static int mute_pins = 0;
+static int amanero_mute_pins = 0;
+static int amanero_mute_delay = 0;
+static struct timer_list amanero_mute_timer;
+void __iomem *amanero_mute_reg;
 
 static inline void mcasp_set_bits(struct davinci_mcasp *mcasp, u32 offset,
 				  u32 val)
@@ -149,24 +153,34 @@ static inline u32 mcasp_get_reg(struct davinci_mcasp *mcasp, u32 offset)
 	return (u32)__raw_readl(mcasp->base + offset);
 }
 
+void amanero_mute_timer_callback( unsigned long data )
+{
+	printk("Delayed unmuting executed.\n");
+	__raw_writel(data, amanero_mute_reg);
+}
+
 static void mute_dsd_pin(struct davinci_mcasp *mcasp, int mute) {
-	void __iomem *z = mcasp->base + DAVINCI_MCASP_PDOUT_REG;
-	int i;
-	int x;
-	for (i = 0; i < 8; i++) {
- 		if ((mute_pins & AXR(i)) != 0) {
-			if (mute) {
-				printk(KERN_NOTICE "really muting pin %d...\n", i);
-				x = __raw_readl(z) | AXR(i);
-				printk(KERN_NOTICE "setting bits %d on pin %d...\n", x, AXR(i));
-				mcasp_set_bits(mcasp, DAVINCI_MCASP_PDOUT_REG, AXR(i));
-			} else {
-				printk(KERN_NOTICE "really unmuting pin %d...\n", i);
-				x = (__raw_readl(z) & ~(AXR(i)));
-				printk(KERN_NOTICE "clearing bits %d on pin %d...\n", x, AXR(i));
-				mcasp_clr_bits(mcasp, DAVINCI_MCASP_PDOUT_REG, AXR(i));
+	int ret;
+	u32 tread = BIT(0)>>1;
+	amanero_mute_reg = mcasp->base + DAVINCI_MCASP_PDOUT_REG;
+	if(amanero_mute_pins) {
+		if (mute) {
+			mcasp_set_bits(mcasp, DAVINCI_MCASP_PDOUT_REG, amanero_mute_pins);
+			if(amanero_mute_delay) {
+				ret = del_timer( &amanero_mute_timer );
+				if (ret) printk(KERN_NOTICE "The amanero timer is still in use...\n");
+				printk("Timer module uninstalling\n");
 			}
- 		}
+		} else {
+			if(amanero_mute_delay && !timer_pending( &amanero_mute_timer )) {				
+				tread = (__raw_readl(amanero_mute_reg) & ~(amanero_mute_pins));
+				amanero_mute_timer.data = tread;
+				ret = mod_timer( &amanero_mute_timer, jiffies + msecs_to_jiffies(amanero_mute_delay) );
+				if (ret) printk(KERN_NOTICE "Error in amanero mod_timer\n");
+			} else {
+				mcasp_clr_bits(mcasp, DAVINCI_MCASP_PDOUT_REG, amanero_mute_pins);
+			}
+		}
 	}
 }
 
@@ -263,7 +277,6 @@ static void mcasp_start_tx(struct davinci_mcasp *mcasp)
 	mcasp_set_bits(mcasp, DAVINCI_MCASP_EVTCTLX_REG,
 		       mcasp->irq_request[SNDRV_PCM_STREAM_PLAYBACK]);
 
-	udelay(mute_delay);
 	mute_dsd_pin(mcasp, 0);
 }
 
@@ -368,8 +381,6 @@ static irqreturn_t davinci_mcasp_tx_irq_handler(int irq, void *data)
 
 	/* Ack the handled event only */
 	mcasp_set_reg(mcasp, DAVINCI_MCASP_TXSTAT_REG, handled_mask);
-
-	printk(KERN_NOTICE "interrupt received %u...\n", stat);
 
 	return IRQ_RETVAL(handled_mask);
 }
@@ -869,7 +880,6 @@ static int mcasp_common_hw_param(struct davinci_mcasp *mcasp, int stream,
 			       mcasp->serial_dir[i]);
 		if (mcasp->serial_dir[i] == TX_MODE &&
 					tx_ser < max_active_serializers) {
-			// printk(KERN_NOTICE "setting serializer %d in TX_MODE\n", i);
 			mcasp_clr_bits(mcasp, DAVINCI_MCASP_PFUNC_REG, AXR(i));
 			mcasp_set_bits(mcasp, DAVINCI_MCASP_PDIR_REG, AXR(i));
 			mcasp_mod_bits(mcasp, DAVINCI_MCASP_XRSRCTL_REG(i),
@@ -877,20 +887,17 @@ static int mcasp_common_hw_param(struct davinci_mcasp *mcasp, int stream,
 			tx_ser++;
 		} else if (mcasp->serial_dir[i] == RX_MODE &&
 					rx_ser < max_active_serializers) {
-			// printk(KERN_NOTICE "setting serializer %d in RX_MODE\n", i);
 			mcasp_clr_bits(mcasp, DAVINCI_MCASP_PFUNC_REG, AXR(i));
 			mcasp_clr_bits(mcasp, DAVINCI_MCASP_PDIR_REG, AXR(i));
 			rx_ser++;
 		} else {
-			printk(KERN_NOTICE "setting serializer %d in standby...\n", i);
+			setup_timer( &amanero_mute_timer, amanero_mute_timer_callback, 0 );
 			mcasp_set_bits(mcasp, DAVINCI_MCASP_PDIR_REG, AXR(i));
-			if ((mute_pins & AXR(i)) == 0 ||
-					((mute_pins & AXR(i)) != 0 && ((mute_pins & BIT(24)) != 0))) {
+			if ((amanero_mute_pins & AXR(i)) == 0 ||
+					((amanero_mute_pins & AXR(i)) != 0 && ((amanero_mute_pins & BIT(24)) != 0))) {
 				mcasp_clr_bits(mcasp, DAVINCI_MCASP_PDOUT_REG, AXR(i));
-				printk(KERN_NOTICE "bits cleared for serializer %d in standby...\n", i);
 			} else {
 				mcasp_set_bits(mcasp, DAVINCI_MCASP_PDOUT_REG, AXR(i));
-				printk(KERN_NOTICE "bits set for serializer %d in standby...\n", i);
 			}
 			mcasp_set_bits(mcasp, DAVINCI_MCASP_PFUNC_REG, AXR(i));
 			mcasp_mod_bits(mcasp, DAVINCI_MCASP_XRSRCTL_REG(i),
@@ -1555,8 +1562,14 @@ static void davinci_mcasp_shutdown(struct snd_pcm_substream *substream,
 static int davinci_mcasp_mute_stream(struct snd_soc_dai *cpu_dai,
 				   int mute, int stream)
 {
+	
 	struct davinci_mcasp *mcasp = snd_soc_dai_get_drvdata(cpu_dai);
 	int i;
+
+	// no need for muting the pins this way:
+	// the DAC mute pin overrides all
+	if (amanero_mute_pins)
+		return 0;
 
 	if (((mute_pins & BIT(24)) != 0)) {
 		/* invert mute */
@@ -1876,7 +1889,6 @@ static struct davinci_mcasp_pdata *davinci_mcasp_set_pdata_from_of(
 			of_serial_dir[i] = be32_to_cpup(&of_serial_dir32[i]);
 
 		pdata->num_serializer = val;
-		printk(KERN_NOTICE "number of serializers: %d\n", pdata->num_serializer);
 		pdata->serial_dir = of_serial_dir;
 	}
 
@@ -2308,8 +2320,11 @@ module_platform_driver(davinci_mcasp_driver);
 module_param(mute_pins, int, 0644);
 MODULE_PARM_DESC(mute_pins, "use some of McASP pins as mute pin (bits 0-3), invert mute (bit 24)");
 
-module_param(mute_delay, int, 0644);
-MODULE_PARM_DESC(mute_delay, "configurable delay for the play click. stop click is already addressed");
+module_param(amanero_mute_pins, int, 0644);
+MODULE_PARM_DESC(amanero_mute_pins, "use some of McASP pins as mute pin (bits 0-3), no invert for now");
+
+module_param(amanero_mute_delay, int, 0644);
+MODULE_PARM_DESC(amanero_mute_pins, "configurable delay for the play pop.");
 
 MODULE_AUTHOR("Steve Chen");
 MODULE_DESCRIPTION("TI DAVINCI McASP SoC Interface");
