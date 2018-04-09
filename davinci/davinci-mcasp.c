@@ -893,8 +893,22 @@ static int mcasp_common_hw_param(struct davinci_mcasp *mcasp, int stream,
 		} else {
 			setup_timer( &amanero_mute_timer, amanero_mute_timer_callback, 0 );
 			mcasp_set_bits(mcasp, DAVINCI_MCASP_PDIR_REG, AXR(i));
-			if ((amanero_mute_pins & AXR(i)) == 0 ||
-					((amanero_mute_pins & AXR(i)) != 0 && ((amanero_mute_pins & BIT(24)) != 0))) {
+			if (
+					(
+						(amanero_mute_pins & AXR(i)) == 0
+						// ||
+						// (
+							// (amanero_mute_pins & AXR(i)) != 0 && ((amanero_mute_pins & BIT(24)) != 0)
+						// )
+					)
+						||
+					(
+						(mute_pins & AXR(i)) == 0
+							||
+						((mute_pins & AXR(i)) != 0 && ((mute_pins & BIT(24)) != 0))
+					)
+				)
+			{
 				mcasp_clr_bits(mcasp, DAVINCI_MCASP_PDOUT_REG, AXR(i));
 			} else {
 				mcasp_set_bits(mcasp, DAVINCI_MCASP_PDOUT_REG, AXR(i));
