@@ -1566,18 +1566,13 @@ static int davinci_mcasp_mute_stream(struct snd_soc_dai *cpu_dai,
 	struct davinci_mcasp *mcasp = snd_soc_dai_get_drvdata(cpu_dai);
 	int i;
 
-	// no need for muting the pins this way:
-	// the DAC mute pin overrides all
-	if (amanero_mute_pins)
-		return 0;
-
-	if (((mute_pins & BIT(24)) != 0)) {
+	if ((((mute_pins & (~amanero_mute_pins)) & BIT(24)) != 0)) {
 		/* invert mute */
 		mute = !mute;
 	}
 
 	for (i = 0; i < mcasp->num_serializer; i++) {
-		if ((mute_pins & AXR(i)) != 0) {
+		if (((mute_pins & (~amanero_mute_pins)) & AXR(i)) != 0) {
 			if (mute) {
 				mcasp_set_bits(mcasp, DAVINCI_MCASP_PDOUT_REG, AXR(i));
 			} else {
@@ -2321,7 +2316,7 @@ module_param(mute_pins, int, 0644);
 MODULE_PARM_DESC(mute_pins, "use some of McASP pins as mute pin (bits 0-3), invert mute (bit 24)");
 
 module_param(amanero_mute_pins, int, 0644);
-MODULE_PARM_DESC(amanero_mute_pins, "use some of McASP pins as mute pin (bits 0-3), no invert for now");
+MODULE_PARM_DESC(amanero_mute_pins, "use some of McASP pins as mute pin (bits 0-3), no invert for now\nif assigned will override the respective mute_pins");
 
 module_param(amanero_mute_delay, int, 0644);
 MODULE_PARM_DESC(amanero_mute_pins, "configurable delay for the play pop.");
